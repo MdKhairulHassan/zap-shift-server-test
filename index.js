@@ -7,6 +7,31 @@ const port = process.env.PORT || 3000;
 
 const crypto = require('crypto');
 
+// var admin = require('firebase-admin');
+
+// ============= // This is for destructuring objects from firebase-admin/app.
+const { initializeApp, cert } = require('firebase-admin/app');
+
+// ============= // This is for destructuring objects from firebase-admin/auth.
+const { getAuth } = require('firebase-admin/auth');
+
+// var serviceAccount = require('./zap-shift-firebase-adminsdk.json');
+
+const serviceAccount = JSON.parse(
+  Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString(
+    'utf8',
+  ),
+);
+
+// admin.initializeApp({
+//   credential: admin.credential.cert(serviceAccount),
+// });
+
+initializeApp({
+  // It takes your Firebase service-account JSON data and makes it into a valid credential Firebase Admin can use.
+  credential: cert(serviceAccount),
+});
+
 function generateTrackingId() {
   const prefix = 'PRCL'; // your brand prefix
   // const date = new Date().toISOString().slice(0, 10).replaceAll('-', '');
@@ -23,6 +48,26 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET);
 // middleware
 app.use(express.json());
 app.use(cors());
+
+const verifyFBToken = async (req, res, next) => {
+  // console.log('headers in the middleware', req.headers?.authorization);
+
+  const token = req.headers.authorization;
+  if (!token) {
+    return res.status(401).send({ message: 'unauthorized access' });
+  }
+
+  try {
+    const idToken = token.split(' ')[1];
+    const decoded = await getAuth().verifyIdToken(idToken);
+    console.log('decoded in the token', decoded);
+    req.decoded_email = decoded.email;
+  } catch (err) {
+    return res.status(401).send({ message: 'unauthorized access' });
+  }
+
+  next();
+};
 
 const uri = process.env.URI;
 
@@ -42,17 +87,102 @@ async function run() {
     // ==============================================
     //DB & collections
     const db = client.db('zap_shift_db');
+    const usersCollection = db.collection('users');
     const parcelsCollection = db.collection('parcels');
     const paymentCollection = db.collection('payments');
+    const ridersCollection = db.collection('riders');
+
+    // middleware admin before allowing admin activity
+    // must be used after verifyFBToken middleware
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded_email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+
+      if (!user || user.role !== 'admin') {
+        return res.status(403).send({ message: 'forbidden access' });
+      }
+      next();
+    };
+
+    // user related apis
+    app.get('/users', verifyFBToken, async (req, res) => {
+      const searchText = req.query.searchText;
+      const query = {};
+      if (searchText) {
+        // search by mongoDB query
+        // $regex = regular expression, searchText = pattarn, $options: 'i' = ignore letter case sensitivity
+        // query.displayName = { $regex: searchText, $options: 'i' };
+
+        query.$or = [
+          { displayName: { $regex: searchText, $options: 'i' } },
+          { email: { $regex: searchText, $options: 'i' } },
+        ];
+      }
+
+      const cursor = usersCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .limit(5);
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    app.get('/users/:id', async (req, res) => {});
+
+    app.get('/users/:email/role', async (req, res) => {
+      const email = req.params.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      res.send({ role: user?.role || 'user' });
+    });
+
+    app.post('/users', async (req, res) => {
+      const user = req.body;
+      user.role = 'user';
+      user.createdAt = new Date();
+
+      const email = user.email;
+      const userExists = await usersCollection.findOne({ email });
+
+      if (userExists) {
+        return res.send({ message: 'user exists' });
+      }
+
+      const result = await usersCollection.insertOne(user);
+      res.send(result);
+    });
+
+    app.patch(
+      '/users/:id/role',
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const roleInfo = req.body;
+        const query = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: {
+            role: roleInfo.role,
+          },
+        };
+        const result = await usersCollection.updateOne(query, updatedDoc);
+        res.send(result);
+      },
+    );
 
     // parcel api
     app.get('/parcels', async (req, res) => {
       const query = {};
-      const { email } = req.query;
+      const { email, deliveryStatus } = req.query;
       // /parcels?email=''&
 
       if (email) {
         query.senderEmail = email;
+      }
+
+      if (deliveryStatus) {
+        query.deliveryStatus = deliveryStatus;
       }
 
       const options = { sort: { createdAt: -1 } };
@@ -105,6 +235,7 @@ async function run() {
         mode: 'payment',
         metadata: {
           parcelId: paymentInfo.parcelId,
+          parcelName: paymentInfo.parcelName,
         },
         customer_email: paymentInfo.senderEmail,
         success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
@@ -190,6 +321,7 @@ async function run() {
         const update = {
           $set: {
             paymentStatus: 'paid',
+            deliveryStatus: 'pending-pickup',
             trackingId: trackingId,
           },
         };
@@ -223,6 +355,78 @@ async function run() {
       res.send({ success: false });
     });
 
+    app.get('/payments', verifyFBToken, async (req, res) => {
+      const email = req.query.email;
+      const query = {};
+
+      console.log('headers', req.headers);
+
+      if (email) {
+        query.customerEmail = email;
+
+        // check email address
+        if (email !== req.decoded_email) {
+          return res.status(403).send({ message: 'forbidden access' });
+        }
+      }
+      const cursor = paymentCollection.find(query).sort({ paidAt: -1 });
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    // riders related apis
+    app.get('/riders', async (req, res) => {
+      const query = {};
+      if (req.query.status) {
+        query.status = req.query.status;
+      }
+      const cursor = ridersCollection.find(query);
+      const result = await cursor.toArray();
+
+      res.send(result);
+    });
+
+    app.post('/riders', async (req, res) => {
+      const rider = req.body;
+      rider.status = 'pending';
+      rider.createdAt = new Date();
+
+      const result = await ridersCollection.insertOne(rider);
+      res.send(result);
+    });
+
+    app.patch('/riders/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+      const status = req.body.status;
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          status: status,
+          workStatus: 'available',
+        },
+      };
+
+      const result = await ridersCollection.updateOne(query, updatedDoc);
+
+      if (status === 'approved') {
+        const email = req.body.email;
+        const userQuery = { email };
+        const updateUser = {
+          $set: {
+            role: 'rider',
+          },
+        };
+        const userResult = await usersCollection.updateOne(
+          userQuery,
+          updateUser,
+        );
+        // res.send(userResult);
+      }
+
+      res.send(result);
+    });
+
+    await client.db('admin').command({ ping: 1 });
     console.log('You successfully connected to MongoDB!');
     return client;
   } catch (err) {
