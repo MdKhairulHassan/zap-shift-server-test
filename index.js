@@ -192,6 +192,23 @@ async function run() {
       res.send(result);
     });
 
+    app.get('/parcels/rider', async (req, res) => {
+      const { riderEmail, deliveryStatus } = req.query;
+      const query = {};
+      if (riderEmail) {
+        query.riderEmail = riderEmail;
+      }
+      if (deliveryStatus) {
+        // query.deliveryStatus = { $in: ['driver_assigned', 'rider_arriving'] };
+        query.deliveryStatus = { $nin: ['parcel_delivered'] };
+      }
+
+      const cursor = parcelsCollection.find(query);
+      const result = await cursor.toArray();
+
+      res.send(result);
+    });
+
     app.get('/parcels/:id', async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
@@ -208,6 +225,7 @@ async function run() {
       res.send(result);
     });
 
+    // TODO: rename this to be specific like /parcel/:id/assign
     app.patch('/parcels/:id', async (req, res) => {
       const { riderId, riderName, riderEmail } = req.body;
       const id = req.params.id;
@@ -237,6 +255,19 @@ async function run() {
       );
 
       res.send(riderResult);
+    });
+
+    app.patch('/parcels/:id/status', async (req, res) => {
+      const { deliveryStatus } = req.body;
+      const query = { _id: new ObjectId(req.params.id) };
+      const updatedDoc = {
+        $set: {
+          deliveryStatus: deliveryStatus,
+        },
+      };
+
+      const result = await parcelsCollection.updateOne(query, updatedDoc);
+      res.send(result);
     });
 
     app.delete('/parcels/:id', async (req, res) => {
