@@ -321,8 +321,8 @@ async function run() {
 
     // payment related APIs
     app.post('/payment-checkout-session', async (req, res) => {
-      const paymentInfo = req.body;
-      const amount = parseInt(paymentInfo.cost) * 100;
+      const parcelInfo = req.body;
+      const amount = parseInt(parcelInfo.cost) * 100;
       const session = await stripe.checkout.sessions.create({
         line_items: [
           {
@@ -330,7 +330,7 @@ async function run() {
               currency: 'usd',
               unit_amount: amount,
               product_data: {
-                name: `please pay for ${paymentInfo.parcelName}`,
+                name: `please pay for ${parcelInfo.parcelName}`,
               },
             },
             quantity: 1,
@@ -338,11 +338,11 @@ async function run() {
         ],
         mode: 'payment',
         metadata: {
-          parcelId: paymentInfo.parcelId,
-          parcelName: paymentInfo.parcelName,
-          trackingId: paymentInfo.trackingId,
+          parcelId: parcelInfo.parcelId,
+          parcelName: parcelInfo.parcelName,
+          trackingId: parcelInfo.trackingId,
         },
-        customer_email: paymentInfo.senderEmail,
+        customer_email: parcelInfo.senderEmail,
         success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
         // Provide a name (for example, hosted_web_0001) to label this Checkout integration and measure its conversion independently
@@ -409,7 +409,7 @@ async function run() {
       const query = { transactionId: transactionId };
 
       const paymentExist = await paymentCollection.findOne(query);
-      console.log(paymentExist);
+      // console.log(paymentExist);
       if (paymentExist) {
         return res.send({
           message: 'already exists',
@@ -446,23 +446,22 @@ async function run() {
           trackingId: trackingId,
         };
 
-        if (session.payment_status === 'paid') {
-          const resultPayment = await paymentCollection.insertOne(payment);
+        const resultPayment = await paymentCollection.insertOne(payment);
 
-          logTracking(trackingId, 'parcel_paid');
+        logTracking(trackingId, 'parcel_paid');
 
-          res.send({
-            success: true,
-            modifyParcel: result,
-            trackingId: trackingId,
-            transactionId: session.payment_intent,
-            paymentInfo: resultPayment,
-          });
-        }
+        return res.send({
+          success: true,
+          modifyParcel: result,
+          trackingId: trackingId,
+          transactionId: session.payment_intent,
+          paymentInfo: resultPayment,
+        });
+
         // res.send(result);
       }
 
-      res.send({ success: false });
+      return res.send({ success: false });
     });
 
     app.get('/payments', verifyFBToken, async (req, res) => {
