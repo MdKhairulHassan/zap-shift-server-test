@@ -106,6 +106,17 @@ async function run() {
       next();
     };
 
+    const verifyRider = async (req, res, next) => {
+      const email = req.decoded_email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+
+      if (!user || user.role !== 'rider') {
+        return res.status(403).send({ message: 'forbidden access' });
+      }
+      next();
+    };
+
     const logTracking = async (trackingId, status) => {
       const log = {
         trackingId,
@@ -228,6 +239,26 @@ async function run() {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await parcelsCollection.findOne(query);
+      res.send(result);
+    });
+
+    app.get('/parcels/delivery-status/stats', async (req, res) => {
+      const pipeline = [
+        {
+          $group: {
+            _id: '$deliveryStatus',
+            count: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            status: '$_id',
+            count: 1,
+            _id: 0,
+          },
+        },
+      ];
+      const result = await parcelsCollection.aggregate(pipeline).toArray();
       res.send(result);
     });
 
@@ -500,6 +531,30 @@ async function run() {
       const cursor = ridersCollection.find(query);
       const result = await cursor.toArray();
 
+      res.send(result);
+    });
+
+    app.get('/riders/delivery-per-day', async (req, res) => {
+      const email = req.query.email;
+      // aggregate on parcel
+      const pipeline = [
+        {
+          $match: {
+            riderEmail: email,
+            deliveryStatus: 'parcel_delivered',
+          },
+        },
+        {
+          $lookup: {
+            from: 'trackings',
+            localField: 'trackingId',
+            foreignField: 'trackingId',
+            as: 'parcel_trackings'
+          },
+        },
+      ];
+
+      const result = await parcelsCollection.aggregate(pipeline).toArray();
       res.send(result);
     });
 
