@@ -537,6 +537,31 @@ async function run() {
     app.get('/riders/delivery-per-day', async (req, res) => {
       const email = req.query.email;
       // aggregate on parcel
+      // const pipeline = [
+      //   {
+      //     $match: {
+      //       riderEmail: email,
+      //       deliveryStatus: 'parcel_delivered',
+      //     },
+      //   },
+      //   {
+      //     $lookup: {
+      //       from: 'trackings',
+      //       localField: 'trackingId',
+      //       foreignField: 'trackingId',
+      //       as: 'parcel_trackings',
+      //     },
+      //   },
+      //   {
+      //     $unwind: '$parcel_trackings',
+      //   },
+      //   {
+      //     $match: {
+      //       '$parcel_trackings.status': 'parcel_delivered',
+      //     },
+      //   },
+      // ];
+
       const pipeline = [
         {
           $match: {
@@ -549,7 +574,31 @@ async function run() {
             from: 'trackings',
             localField: 'trackingId',
             foreignField: 'trackingId',
-            as: 'parcel_trackings'
+            as: 'parcel_trackings',
+          },
+        },
+        {
+          $unwind: '$parcel_trackings',
+        },
+        {
+          $match: {
+            'parcel_trackings.status': 'parcel_delivered',
+          },
+        },
+        {
+          $addFields: {
+            deliveryDay: {
+              $dateToString: {
+                format: '%Y-%m-%d',
+                date: '$parcel_trackings.createdAt',
+              },
+            },
+          },
+        },
+        {
+          $group: {
+            _id: '$deliveryDay',
+            deliveredCount: { $sum: 1 },
           },
         },
       ];
